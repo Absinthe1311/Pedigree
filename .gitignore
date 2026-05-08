@@ -1,6 +1,26 @@
+# 依赖与构建产物
 node_modules/
 dist/
+
+# 环境变量
 .env
 .env.local
+.env.*.local
+
+# 日志
 *.log
-pddata/
+npm-debug.log*
+
+# 数据库数据目录
+pgdata/
+
+# 编辑器配置（按你用的工具选择保留）
+.vscode/
+.idea/
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
