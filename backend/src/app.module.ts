@@ -13,7 +13,10 @@ import { CollabModule } from './collab/collab.module';
 
 @Module({
   imports: [
+    // 加载.env文件，isGlobal让所有的模块都可以使用process.env
     ConfigModule.forRoot({ isGlobal: true}),
+
+    // 数据库连接配置
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST,
@@ -21,11 +24,14 @@ import { CollabModule } from './collab/collab.module';
       username: process.env.DB_USERNAME,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_DATABASE,
+      // 自动扫描所有的 .entity.ts文件
       entities: [__dirname + '/**/*.entity{.ts,.js}'],
+      // false表示不自动修改数据库结构
       synchronize: false,
     }),
-    AuthModule,
-    UsersModule,
+
+    AuthModule, // 注册认证模块
+    UsersModule, // 注册用户模块
     FamiliesModule,
     MembersModule,
     QueryModule,

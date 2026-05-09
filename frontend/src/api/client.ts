@@ -1,8 +1,8 @@
 import axios from 'axios';
 
 const client = axios.create({
-    baseURL: 'http://localhost:3000',
-    timeout: 10000,
+    baseURL: 'http://localhost:3000', // 后端地址
+    timeout: 10000, // 10秒超时
 });
 
 // 自动注入JWT Token
