@@ -1,4 +1,5 @@
 // 用户填写用户名和密码，提交后调用注册接口，成功后跳转登录页
+// 注册页面
 import {useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import client from '../../api/client';

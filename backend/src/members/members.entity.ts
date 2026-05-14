@@ -21,7 +21,7 @@ export class Member {
     birth: string;      // 格式：YYYY-MM-DD
 
     @Column({name:"death", nullable: true, type:'date'})
-    death: Date;        // 格式 YYYY-MM-DD
+    death: string;        // 格式 YYYY-MM-DD
 
     @Column({name:"bio", nullable:true, type:'text'})
     bio:string;
