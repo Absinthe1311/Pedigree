@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { CreateFamilyDto } from './dto/create-family.dto'
 import { UpdateFamilyDto } from './dto/update-family.dto'
+import { Collab } from '../collab/collab.entity'
 
 @Injectable()
 export class FamiliesService {
@@ -14,6 +15,9 @@ export class FamiliesService {
         private readonly familyRepo: Repository<FamilyTree>,
         // 这里的familyRepo是TypeORM提供的操作family_tree表的方法
         // 可以调用findOne, save, create等方法
+
+        @InjectRepository(Collab)
+        private readonly collabRepo: Repository<Collab>,
     ){}
 
     // 创建家谱
@@ -47,7 +51,16 @@ export class FamiliesService {
 
         // 权限校验： 只有当前创建者可以访问
         // 后续collab模块完成之后，受邀者也可以访问
-        if(family.creatorId !== userId){
+        if(family.creatorId === userId){
+            return family;
+        }
+
+        // 不是创建者，检查是否是受邀的协作者
+        const collab = await this.collabRepo.findOne({
+            where: {treeId, inviteeId: userId},
+        });
+
+        if(!collab) {
             throw new ForbiddenException('无权访问该族谱');
         }
 

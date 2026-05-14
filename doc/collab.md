@@ -3,7 +3,7 @@
 > 技术栈：NestJS（后端）· React + TypeScript（前端）· PostgreSQL · JWT  
 > 适用环境：WSL2 Ubuntu 22.04  
 > 前置条件：Auth + Families + Members + Marriages + Query 模块已完成并测试通过  
-> 文档版本：v1.0
+> 文档版本：v1.1
 
 ---
 
@@ -116,7 +116,7 @@ export class Collab {
 
 **注意事项：**
 - 联合主键使用两个 `@PrimaryColumn` 而不是 `@PrimaryGeneratedColumn`，因为主键是 `(tree_id, invitee_id)` 的组合
-- `@CreateDateColumn` 对应数据库中的 `created_at`，数据库表中有这列所以可以保留
+- `@CreateDateColumn` 对应数据库中的 `created_at`，插入时自动写入当前时间
 
 ---
 
@@ -126,13 +126,12 @@ export class Collab {
 
 ```typescript
 export class CreateCollabDto {
-  // 通过用户名邀请，比要求知道 userId 对用户更友好
-  inviteeUserName: string;
+  inviteeId: number;   // 被邀请人的用户 ID
 }
 ```
 
-> **为什么用 userName 而不是 userId？**  
-> 让创建者输入被邀请人的用户名，和注册时使用的字段一致，用户体验更自然。Service 层根据 userName 查出对应的 userId 后再写入 collab 表。
+> **为什么用 userId 而不是 userName？**  
+> `userId` 是数据库主键，唯一且不会变更，直接写入 collab 表无需额外查询，效率更高，也不存在用户名改名后邀请失效的风险。前端在展示用户列表时可通过其他接口获取 userId，传给本接口即可。
 
 ---
 
@@ -277,31 +276,31 @@ export class CollabService {
   ): Promise<Collab> {
     await this.verifyCreator(treeId, inviterId);
 
-    // 根据用户名查找被邀请人
+    // 验证被邀请人确实存在
     const invitee = await this.userRepo.findOne({
-      where: { userName: dto.inviteeUserName },
+      where: { userId: dto.inviteeId },
     });
     if (!invitee) {
-      throw new NotFoundException(`用户 "${dto.inviteeUserName}" 不存在`);
+      throw new NotFoundException(`用户 ID ${dto.inviteeId} 不存在`);
     }
 
     // 不能邀请自己
-    if (invitee.userId === inviterId) {
+    if (dto.inviteeId === inviterId) {
       throw new BadRequestException('不能邀请自己成为协作者');
     }
 
     // 检查是否已经邀请过
     const existing = await this.collabRepo.findOne({
-      where: { treeId, inviteeId: invitee.userId },
+      where: { treeId, inviteeId: dto.inviteeId },
     });
     if (existing) {
-      throw new ConflictException(`用户 "${dto.inviteeUserName}" 已经是该族谱的协作者`);
+      throw new ConflictException(`用户 ID ${dto.inviteeId} 已经是该族谱的协作者`);
     }
 
     const collab = this.collabRepo.create({
       treeId,
       inviterId,
-      inviteeId: invitee.userId,
+      inviteeId: dto.inviteeId,
     });
 
     return this.collabRepo.save(collab);
@@ -317,9 +316,9 @@ export class CollabService {
       .leftJoin(User, 'invitee', 'invitee.user_id = c.invitee_id')
       .leftJoin(User, 'inviter', 'inviter.user_id = c.inviter_id')
       .select([
-        'c.invitee_id     AS "inviteeId"',
-        'c.inviter_id     AS "inviterId"',
-        'c.created_at     AS "createdAt"',
+        'c.invitee_id      AS "inviteeId"',
+        'c.inviter_id      AS "inviterId"',
+        'c.created_at      AS "createdAt"',
         'invitee.user_name AS "inviteeUserName"',
         'inviter.user_name AS "inviterUserName"',
       ])
@@ -355,10 +354,10 @@ export class CollabService {
       .leftJoin(FamilyTree, 'f', 'f.tree_id = c.tree_id')
       .leftJoin(User, 'inviter', 'inviter.user_id = c.inviter_id')
       .select([
-        'f.tree_id      AS "treeId"',
-        'f.tree_name    AS "treeName"',
-        'f.surname      AS "surname"',
-        'c.created_at   AS "createdAt"',
+        'f.tree_id         AS "treeId"',
+        'f.tree_name       AS "treeName"',
+        'f.surname         AS "surname"',
+        'c.created_at      AS "createdAt"',
         'inviter.user_name AS "inviterUserName"',
       ])
       .where('c.invitee_id = :userId', { userId })
@@ -369,6 +368,8 @@ export class CollabService {
   }
 }
 ```
+
+**注意：** `invite` 方法中仍然查询了一次 `users` 表（`userRepo.findOne`），目的是验证该 userId 确实存在，避免写入一个无效的外键。这不是查用户名用于匹配，而是做存在性校验。
 
 ---
 
@@ -400,6 +401,7 @@ export class CollabController {
 
   // POST /families/:treeId/collab
   // 邀请用户成为协作者（仅创建者可操作）
+  // 请求体：{ "inviteeId": 2 }
   @Post('families/:treeId/collab')
   invite(
     @Param('treeId', ParseIntPipe) treeId: number,
@@ -520,9 +522,11 @@ export class AppModule {}
 **前置准备：准备两个账号**
 
 ```
-账号 A（创建者）：userName: "alice"，已创建族谱 treeId=1
-账号 B（被邀请人）：userName: "bob"，已注册但未与该族谱关联
+账号 A（创建者）：userName: "alice"，userId: 1，已创建族谱 treeId=1
+账号 B（被邀请人）：userName: "bob"，userId: 2，已注册但未与该族谱关联
 ```
+
+> **如何获取 userId？** 登录接口返回的 Token 是 JWT，可以在 [jwt.io](https://jwt.io) 解码，payload 里的 `sub` 字段就是 userId。或者直接查数据库：`SELECT user_id, user_name FROM users;`
 
 ---
 
@@ -534,7 +538,7 @@ URL：http://localhost:3000/families/{{treeId}}/collab
 Authorization：Bearer {{tokenA}}（alice 的 token）
 Body（raw JSON）：
 {
-  "inviteeUserName": "bob"
+  "inviteeId": 2
 }
 
 期望响应（201）：
@@ -544,16 +548,6 @@ Body（raw JSON）：
   "inviterId": 1,
   "createdAt": "..."
 }
-```
-
-Tests 脚本：
-```javascript
-pm.test("状态码为 201", () => pm.response.to.have.status(201));
-pm.test("inviteeId 正确", () => {
-    const json = pm.response.json();
-    pm.expect(json).to.have.property("inviteeId");
-    pm.environment.set("inviteeId", json.inviteeId);
-});
 ```
 
 ---
@@ -619,7 +613,7 @@ Authorization：Bearer {{tokenB}}
 
 ```
 方法：DELETE
-URL：http://localhost:3000/families/{{treeId}}/collab/{{inviteeId}}
+URL：http://localhost:3000/families/{{treeId}}/collab/2
 Authorization：Bearer {{tokenA}}
 
 期望响应（200）：{ "message": "协作者已移除" }
@@ -632,13 +626,13 @@ Authorization：Bearer {{tokenA}}
 
 #### 测试 8.6：异常测试用例
 
-| 测试名称 | 说明 | 预期状态码 |
-|----------|------|------------|
+| 测试名称 | 请求 Body | 预期状态码 |
+|----------|-----------|------------|
 | 非创建者邀请 | 用 bob 的 token 邀请他人 | `403` |
-| 邀请不存在的用户名 | `inviteeUserName: "nobody"` | `404` |
-| 邀请自己 | inviteeUserName 填自己的 userName | `400` |
-| 重复邀请同一人 | 对 bob 发起第二次邀请 | `409` |
-| 移除不存在的协作者 | DELETE 一个未被邀请的 userId | `404` |
+| 邀请不存在的 userId | `{ "inviteeId": 9999 }` | `404` |
+| 邀请自己 | `{ "inviteeId": 1 }`（alice 自己的 ID） | `400` |
+| 重复邀请同一人 | 对 inviteeId=2 发起第二次邀请 | `409` |
+| 移除不存在的协作者 | DELETE `/collab/9999` | `404` |
 | 非创建者查看协作者列表 | 用 bob 的 token 访问 GET collab | `403` |
 
 ---
@@ -666,10 +660,10 @@ export interface MyCollabRecord {
   inviterUserName: string;
 }
 
-// 邀请协作者
-export const inviteCollab = (treeId: number, inviteeUserName: string) =>
+// 邀请协作者（传入被邀请人的 userId）
+export const inviteCollab = (treeId: number, inviteeId: number) =>
   client
-    .post(`/families/${treeId}/collab`, { inviteeUserName })
+    .post(`/families/${treeId}/collab`, { inviteeId })
     .then((res) => res.data);
 
 // 获取族谱协作者列表
@@ -695,6 +689,8 @@ export const getMyCollabs = () =>
 
 **文件路径：** `frontend/src/pages/CollabPage/index.tsx`
 
+> **UI 说明：** 由于邀请时传的是 userId 而非用户名，前端需要让创建者输入对方的 userId。输入框旁边加了说明文字，提示用户如何获取对方 ID（对方登录后可在个人信息页查看）。后续如果开发了用户搜索接口，可以替换为搜索框。
+
 ```typescript
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
@@ -709,11 +705,11 @@ export default function CollabPage() {
   const { treeId } = useParams<{ treeId: string }>();
   const numericTreeId = Number(treeId);
 
-  const [collabs, setCollabs]           = useState<CollabRecord[]>([]);
-  const [loading, setLoading]           = useState(true);
-  const [error, setError]               = useState('');
-  const [inviteeName, setInviteeName]   = useState('');
-  const [inviting, setInviting]         = useState(false);
+  const [collabs, setCollabs]         = useState<CollabRecord[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState('');
+  const [inviteeId, setInviteeId]     = useState('');   // 输入的是数字字符串
+  const [inviting, setInviting]       = useState(false);
 
   useEffect(() => { loadCollabs(); }, []);
 
@@ -729,11 +725,15 @@ export default function CollabPage() {
   };
 
   const handleInvite = async () => {
-    if (!inviteeName.trim()) { alert('请输入用户名'); return; }
+    const id = parseInt(inviteeId);
+    if (!inviteeId.trim() || isNaN(id) || id <= 0) {
+      alert('请输入有效的用户 ID（正整数）');
+      return;
+    }
     setInviting(true);
     try {
-      await inviteCollab(numericTreeId, inviteeName.trim());
-      setInviteeName('');
+      await inviteCollab(numericTreeId, id);
+      setInviteeId('');
       await loadCollabs();   // 刷新列表
     } catch (err: any) {
       alert(err.response?.data?.message || '邀请失败');
@@ -743,7 +743,7 @@ export default function CollabPage() {
   };
 
   const handleRemove = async (collab: CollabRecord) => {
-    if (!window.confirm(`确定移除协作者 "${collab.inviteeUserName}" 吗？移除后对方将无法访问此族谱。`)) return;
+    if (!window.confirm(`确定移除协作者 "${collab.inviteeUserName}"（ID: ${collab.inviteeId}）吗？移除后对方将无法访问此族谱。`)) return;
     try {
       await removeCollab(numericTreeId, collab.inviteeId);
       setCollabs(collabs.filter((c) => c.inviteeId !== collab.inviteeId));
@@ -764,10 +764,12 @@ export default function CollabPage() {
         <h3 style={{ marginTop: 0 }}>邀请协作者</h3>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
-            value={inviteeName}
-            onChange={(e) => setInviteeName(e.target.value)}
+            value={inviteeId}
+            onChange={(e) => setInviteeId(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleInvite()}
-            placeholder="输入对方的用户名"
+            placeholder="输入对方的用户 ID"
+            type="number"
+            min={1}
             style={{ flex: 1, padding: 8, border: '1px solid #ddd', borderRadius: 4 }}
           />
           <button onClick={handleInvite} disabled={inviting}>
@@ -775,6 +777,7 @@ export default function CollabPage() {
           </button>
         </div>
         <p style={{ color: '#999', fontSize: 13, marginTop: 8, marginBottom: 0 }}>
+          请输入对方的用户 ID。对方登录后可在个人信息页查看自己的 ID。
           受邀者邀请后立即获得访问权限，可查看和编辑族谱成员与婚姻关系。
         </p>
       </div>
@@ -792,7 +795,7 @@ export default function CollabPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#f5f5f5' }}>
-              {['用户名', '邀请人', '邀请时间', '操作'].map((h) => (
+              {['用户名', '用户 ID', '邀请人', '邀请时间', '操作'].map((h) => (
                 <th key={h} style={{ padding: '10px 12px', textAlign: 'left', borderBottom: '1px solid #eee' }}>
                   {h}
                 </th>
@@ -803,6 +806,7 @@ export default function CollabPage() {
             {collabs.map((c) => (
               <tr key={c.inviteeId} style={{ borderBottom: '1px solid #f0f0f0' }}>
                 <td style={{ padding: '10px 12px', fontWeight: 500 }}>{c.inviteeUserName}</td>
+                <td style={{ padding: '10px 12px', color: '#999', fontFamily: 'monospace' }}>{c.inviteeId}</td>
                 <td style={{ padding: '10px 12px', color: '#666' }}>{c.inviterUserName}</td>
                 <td style={{ padding: '10px 12px', color: '#666' }}>
                   {new Date(c.createdAt).toLocaleDateString()}
@@ -925,23 +929,24 @@ export default function App() {
 
 ### 后端测试（Postman）
 
-- [ ] POST 邀请成功，返回 collab 记录
+- [ ] POST 邀请成功（Body 传 `inviteeId`），返回 collab 记录
 - [ ] 邀请后 bob 用自己的 token 访问 GET `/families/:treeId/members` 返回 200（**权限扩展验证**）
-- [ ] GET 协作者列表，返回包含 userName 的完整信息
+- [ ] GET 协作者列表，返回包含 `inviteeUserName` 和 `inviteeId` 的完整信息
 - [ ] GET `/collab/mine`，bob 能看到被邀请的族谱
 - [ ] DELETE 移除 bob 后，bob 再次访问成员列表返回 403（**权限撤销验证**）
-- [ ] 邀请不存在的用户名返回 404
-- [ ] 邀请自己返回 400
-- [ ] 重复邀请返回 409
+- [ ] 邀请不存在的 userId 返回 404
+- [ ] 邀请自己的 userId 返回 400
+- [ ] 重复邀请同一 userId 返回 409
 - [ ] 非创建者邀请返回 403
 - [ ] 在 PostgreSQL 里确认：`SELECT * FROM collab;`
 
 ### 前端测试（浏览器）
 
 - [ ] 协作管理页正常加载协作者列表
-- [ ] 输入正确用户名点击邀请，列表即时刷新出现新协作者
-- [ ] 输入不存在的用户名，显示错误提示
-- [ ] 点击移除弹出确认框（含用户名），确认后协作者从列表消失
+- [ ] 输入正确的用户 ID 点击邀请，列表即时刷新出现新协作者（显示用户名）
+- [ ] 输入不存在的 userId，显示错误提示
+- [ ] 输入非数字或负数，显示前端校验提示
+- [ ] 点击移除弹出确认框（含用户名和 ID），确认后协作者从列表消失
 - [ ] 用 bob 账号登录，Dashboard 页"我参与的族谱"区域显示被邀请的族谱
 - [ ] bob 点击"进入管理"可以正常访问成员列表
 
@@ -954,9 +959,10 @@ export default function App() {
 | `403` 邀请后受邀者仍无法访问 | `FamiliesService.findOne` 未修改，或 `Collab` 实体未在 `FamiliesModule` 注册 | 检查 Step 3，确认 `families.module.ts` 已添加 `Collab` 到 `forFeature` |
 | `Cannot find module '../collab/collab.entity'` | 在 `families.module.ts` 引入路径写错 | 确认 collab.entity.ts 文件路径正确 |
 | `Nest can't resolve CollabService dependencies` | `TypeOrmModule.forFeature` 缺少某个实体 | 检查 `collab.module.ts` 的 `forFeature([Collab, FamilyTree, User])` |
-| `404 用户不存在` | 被邀请人用户名拼写错误 | 确认对方已注册且用户名完全一致 |
+| `404 用户 ID X 不存在` | 传入了不存在的 userId | 确认对方已注册，可查数据库 `SELECT user_id, user_name FROM users;` |
 | `409 已经是协作者` | 重复邀请同一人 | 正常行为，提示用户该成员已在列表中 |
 | 联表查询返回字段为 null | `getRawMany` 的列别名大小写问题 | 确认 `AS "inviteeUserName"` 使用双引号且大小写与前端一致 |
+| 前端输入框接受小数 | `type="number"` 不限制整数 | 已在 `handleInvite` 里用 `parseInt` + `isNaN` 做二次校验 |
 
 ---
 
@@ -1002,13 +1008,13 @@ Pedigree/
 至此，Pedigree 项目所有模块均已完成：
 
 ```
-✅ Auth     → 注册、登录、JWT 签发与验证
-✅ Users    → 用户信息管理
-✅ Families → 族谱增删改查、权限控制
-✅ Members  → 成员增删改查、模糊搜索
+✅ Auth      → 注册、登录、JWT 签发与验证
+✅ Users     → 用户信息管理
+✅ Families  → 族谱增删改查、权限控制
+✅ Members   → 成员增删改查、模糊搜索
 ✅ Marriages → 婚姻关系管理、约束校验
-✅ Query    → 祖先/后代查询、亲缘路径、族谱统计
-✅ Collab   → 协作邀请、权限扩展
+✅ Query     → 祖先/后代查询、亲缘路径、族谱统计
+✅ Collab    → 协作邀请、权限扩展
 ```
 
 后续可以考虑的优化方向：
@@ -1023,4 +1029,4 @@ Pedigree/
 
 ---
 
-*文档版本：v1.0 · 模块：Collab · 项目：Pedigree · 环境：WSL2 Ubuntu 22.04*
+*文档版本：v1.1 · 模块：Collab · 项目：Pedigree · 环境：WSL2 Ubuntu 22.04*
