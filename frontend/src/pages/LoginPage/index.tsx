@@ -1,10 +1,12 @@
 // 登录页面
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../../store/authStore'
 import client from '../../api/client';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const{ setAuth } = useAuthStore();
 
   const [userName, setUserName] = useState('');
   const [password, setPassword] = useState('');
@@ -22,11 +24,13 @@ export default function LoginPage() {
 
     try {
       const res = await client.post('/auth/login', { userName, password });
-
+      setAuth(res.data.token,{
+        userId:res.data.userId,
+        userName:res.data.userName,
+      });
       // 把 Token 存到 localStorage
       // 之后每次 API 请求，client.ts 里的拦截器会自动带上它
-      localStorage.setItem('token', res.data.token);
-
+      // localStorage.setItem('token', res.data.token);
       // 登录成功，跳转到主页面
       navigate('/dashboard');
     } catch (err: any) {
